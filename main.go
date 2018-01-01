@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hunterhug/GoSpider/spider"
-	"github.com/hunterhug/GoTool/util"
+	"github.com/hunterhug/marmot/miner"
+	"github.com/hunterhug/parrot/util"
 	"github.com/metakeule/fmtdate"
 	"golang.org/x/net/html"
 )
 
-// SpiderNum . Num of spider, We can run it at the same time to crawl data fast
-var SpiderNum = 5
+// WorkNum . Num of Work, We can run it at the same time to crawl data fast
+var WorkNum = 5
 
 // ProxyAddress . You can update this decide whether to proxy
 var ProxyAddress interface{}
@@ -75,34 +75,51 @@ func main() {
 	}
 	defer file.Close()
 
+	defer log.Printf("============= Exit =============")
+	st, err := Crawling(file, startIndex, count)
+	if err != nil {
+		return
+	}
+	startIndex += st
+
 	// 24시간마다 반복..
 	ticker := time.NewTicker(time.Hour * 24)
 	for _ = range ticker.C {
-		urls, err, cnt := PornFileRead(file, startIndex, count)
+		st, err = Crawling(file, startIndex, count)
 		if err != nil {
-			log.Println(err.Error())
-			return
-		}
-
-		if cnt == 0 {
-			log.Println("file all clear")
 			ticker.Stop()
 		}
-
-		saveDir := fmt.Sprintf("%s/%s", dir, fmtdate.Format(fmtdate.DefaultDateFormat, time.Now()))
-
-		var saveCnt int
-		for _, url := range urls {
-			succCnt, err := CatchPicture(url, saveDir)
-			if err != nil {
-				log.Println("Error:" + err.Error())
-			}
-			saveCnt += succCnt
-		}
-
-		log.Printf("=============Save : %d=============", saveCnt)
-		startIndex += count
+		startIndex += st
 	}
+}
+
+func Crawling(listFile *os.File, startIndex, count int) (int, error) {
+	urls, err, cnt := PornFileRead(listFile, startIndex, count)
+	if err != nil {
+		log.Println(err.Error())
+		return 0, err
+	}
+
+	if cnt == 0 {
+		log.Println("file all clear")
+		return 0, errors.New("file all clear")
+	}
+
+	saveDir := fmt.Sprintf("%s/%s", dir, fmtdate.Format(fmtdate.DefaultDateFormat, time.Now()))
+
+	var saveCnt int
+	for i, url := range urls {
+		log.Printf("========[%d] Find Start [%s]=========", startIndex+i, url)
+		succCnt, err := CatchPicture(url, saveDir)
+		if err != nil {
+			log.Println("Error :" + err.Error())
+		}
+		saveCnt += succCnt
+	}
+
+	log.Printf("=============Save : %d=============", saveCnt)
+	startIndex += count
+	return startIndex, nil
 }
 
 // CatchPicture .
@@ -123,16 +140,14 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 		return 0, err
 	}
 
-	// New a sp to get url
-	sp, _ := spider.New(ProxyAddress)
+	// New a worker to get url
+	worker, _ := miner.New(ProxyAddress)
 
 	if false == strings.HasPrefix(pictureURL, "http") {
 		URL = "http://" + URL
 	}
 
-	log.Printf("========Find Start [%s]=========", URL)
-
-	result, err := sp.SetUrl(URL).SetUa(spider.RandomUa()).Get()
+	result, err := worker.SetUrl(URL).SetUa(miner.RandomUa()).Get()
 	if err != nil {
 		if true == strings.HasPrefix(pictureURL, "http://") {
 			URL = strings.Replace(URL, "http", "https", 1)
@@ -140,7 +155,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 			URL = strings.Replace(URL, "https", "http", 1)
 		}
 
-		result, err = sp.SetUrl(URL).SetUa(spider.RandomUa()).Get()
+		result, err = worker.SetUrl(URL).SetUa(miner.RandomUa()).Get()
 		if err != nil {
 			log.Println(err.Error())
 			return 0, err
@@ -152,11 +167,11 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 
 	// Empty, What a pity!
 	if len(pictures) == 0 {
-		return 0, errors.New(fmt.Sprintf("[%s] Empty Picutres link\n", URL))
+		return 0, fmt.Errorf("[%s] Empty Picutres link", pictureURL)
 	}
 
-	// Devide pictures into several sp
-	xxx, _ := util.DevideStringList(pictures, SpiderNum)
+	// Devide pictures into several worker
+	xxx, _ := util.DevideStringList(pictures, WorkNum)
 
 	// Chanel to info exchange
 	chs := make(chan int, len(pictures))
@@ -164,22 +179,22 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 	// Go at the same time
 	for num, imgs := range xxx {
 
-		// Get pool spider
-		spPicture, ok := spider.Pool.Get(util.IS(num))
+		// Get pool miner
+		workerPicture, ok := miner.Pool.Get(util.IS(num))
 		if !ok {
 			// No? set one!
-			spTemp, err := spider.New(ProxyAddress)
+			workerTemp, err := miner.New(ProxyAddress)
 			if err != nil {
 				log.Println(err.Error())
 				continue
 			}
-			spPicture = spTemp
-			spTemp.SetUa(spider.RandomUa())
-			spider.Pool.Set(util.IS(num), spTemp)
+			workerPicture = workerTemp
+			workerTemp.SetUa(miner.RandomUa())
+			miner.Pool.Set(util.IS(num), workerTemp)
 		}
 
 		// Go save picture!
-		go func(imgs []string, sp *spider.Spider, num int) {
+		go func(imgs []string, worker *miner.Worker, num int) {
 			for _, img := range imgs {
 
 				// Check, May be Pass
@@ -198,7 +213,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 				} else {
 
 					// Not Exsit?
-					imgsrc, e := sp.SetUrl(img).Get()
+					imgsrc, e := worker.SetUrl(img).Get()
 					if e != nil {
 						// log.Println("Download " + img + " error:" + e.Error())
 						chs <- 0
@@ -215,7 +230,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 					chs <- 1
 				}
 			}
-		}(imgs, spPicture, num)
+		}(imgs, workerPicture, num)
 	}
 
 	succ := 0
@@ -227,7 +242,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 		}
 	}
 
-	log.Printf("[%d/%d] Complate %s\n", succ, len(pictures), URL)
+	log.Printf("[%d/%d] Complate %s\n", succ, len(pictures), pictureURL)
 
 	return succ, nil
 }
