@@ -6,17 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hunterhug/marmot/miner"
 	"github.com/hunterhug/parrot/util"
 	"github.com/metakeule/fmtdate"
+	"github.com/pquerna/ffjson/ffjson"
 	"golang.org/x/net/html"
 )
 
@@ -26,36 +27,30 @@ var WorkNum = 5
 // ProxyAddress . You can update this decide whether to proxy
 var ProxyAddress interface{}
 
-const dir = "./picture"
-const resultFile = "./result.txt"
+type Config struct {
+	SaveDir    string `json:"SaveDir"`
+	StartIndex int    `json:"StartIndex"`
+	ReadCount  int    `json:"ReadCount"`
+	Ticker     int    `json:"Ticker"`
+}
+
+var Conf Config
 
 func main() {
-	startIndex := 0
-	count := 0
 	var err error
 
-	argsWithoutProg := os.Args[1:]
-	switch len(argsWithoutProg) {
-	case 1:
-		count, err = strconv.Atoi(argsWithoutProg[0])
-		if err != nil {
-			log.Printf("argument convert error : %s", err.Error())
-			return
-		}
-	case 2:
-		startIndex, err = strconv.Atoi(argsWithoutProg[0])
-		if err != nil {
-			log.Printf("argument convert error : %s", err.Error())
-			return
-		}
-		count, err = strconv.Atoi(argsWithoutProg[1])
-		if err != nil {
-			log.Printf("argument convert error : %s", err.Error())
-			return
-		}
-	default:
-		log.Println("argument is empty")
+	data, err := ioutil.ReadFile("./config.json")
+	if err != nil {
+		panic(err)
 	}
+
+	err = ffjson.Unmarshal(data, &Conf)
+	if err != nil {
+		panic(err)
+	}
+
+	startIndex := Conf.StartIndex
+	count := Conf.ReadCount
 
 	fpLog, err := os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -82,14 +77,16 @@ func main() {
 	}
 	startIndex += st
 
-	// 24시간마다 반복..
-	ticker := time.NewTicker(time.Hour * 24)
-	for _ = range ticker.C {
-		st, err = Crawling(file, startIndex, count)
-		if err != nil {
-			ticker.Stop()
+	if Conf.Ticker > 0 {
+		log.Printf("============= Ticker[%d] =============\n", Conf.Ticker)
+		ticker := time.NewTicker(time.Hour * time.Duration(Conf.Ticker))
+		for _ = range ticker.C {
+			st, err = Crawling(file, startIndex, count)
+			if err != nil {
+				ticker.Stop()
+			}
+			startIndex += st
 		}
-		startIndex += st
 	}
 }
 
@@ -105,11 +102,19 @@ func Crawling(listFile *os.File, startIndex, count int) (int, error) {
 		return 0, errors.New("file all clear")
 	}
 
-	saveDir := fmt.Sprintf("%s/%s", dir, fmtdate.Format(fmtdate.DefaultDateFormat, time.Now()))
+	log.Printf("======== [%d]->[%d] Crawling Start =========", startIndex, startIndex+count-1)
+
+	saveDir := fmt.Sprintf("%s/%s", Conf.SaveDir, fmtdate.Format(fmtdate.DefaultDateFormat, time.Now()))
+
+	// Make dir!
+	err = util.MakeDir(saveDir)
+	if err != nil {
+		panic(err)
+	}
 
 	var saveCnt int
 	for i, url := range urls {
-		log.Printf("========[%d] Find Start [%s]=========", startIndex+i, url)
+		log.Printf("[%d] Find Start [%s]", startIndex+i, url)
 		succCnt, err := CatchPicture(url, saveDir)
 		if err != nil {
 			log.Println("Error :" + err.Error())
@@ -117,7 +122,7 @@ func Crawling(listFile *os.File, startIndex, count int) (int, error) {
 		saveCnt += succCnt
 	}
 
-	log.Printf("=============Save : %d=============", saveCnt)
+	log.Printf("======== Save : %d ========", saveCnt)
 	startIndex += count
 	return startIndex, nil
 }
@@ -128,13 +133,6 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 
 	// Check valid
 	_, err := url.Parse(URL)
-	if err != nil {
-		log.Println(err.Error())
-		return 0, err
-	}
-
-	// Make dir!
-	err = util.MakeDir(dir)
 	if err != nil {
 		log.Println(err.Error())
 		return 0, err
@@ -178,7 +176,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 
 	// Go at the same time
 	for num, imgs := range xxx {
-
+		// fmt.Printf("[CatchPicture] [%d][%d]", num, len(imgs))
 		// Get pool miner
 		workerPicture, ok := miner.Pool.Get(util.IS(num))
 		if !ok {
@@ -200,6 +198,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 				// Check, May be Pass
 				_, err := url.Parse(img)
 				if err != nil {
+					chs <- 0
 					continue
 				}
 
@@ -223,7 +222,7 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 					// Save it!
 					e = util.SaveToFile(dir+"/"+filename, imgsrc)
 					if e != nil {
-						// log.Printf("Image Save Fail %s/%s [%s]\n", dir, filename, err.Error())
+						log.Printf("Image Save Fail %s/%s [%s]\n", dir, filename, e.Error())
 						chs <- 0
 						continue
 					}
@@ -236,11 +235,12 @@ func CatchPicture(pictureURL string, dir string) (int, error) {
 	succ := 0
 	// Every picture should return
 	for i := 0; i < len(pictures); i++ {
-		//fmt.Printf("%d / %d", i, len(pictures))
+		fmt.Printf("[%d/%d] ", i+1, len(pictures))
 		if 1 == <-chs {
 			succ++
 		}
 	}
+	fmt.Println()
 
 	log.Printf("[%d/%d] Complate %s\n", succ, len(pictures), pictureURL)
 
