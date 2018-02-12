@@ -16,7 +16,6 @@ import (
 
 	"github.com/hunterhug/marmot/miner"
 	"github.com/hunterhug/parrot/util"
-	"github.com/metakeule/fmtdate"
 	"github.com/pquerna/ffjson/ffjson"
 	"golang.org/x/net/html"
 )
@@ -104,7 +103,7 @@ func Crawling(listFile *os.File, startIndex, count int) (int, error) {
 
 	log.Printf("======== [%d]->[%d] Crawling Start =========", startIndex, startIndex+count-1)
 
-	saveDir := fmt.Sprintf("%s/%s", Conf.SaveDir, fmtdate.Format(fmtdate.DefaultDateFormat, time.Now()))
+	saveDir := Conf.SaveDir //fmt.Sprintf("%s/%s", Conf.SaveDir, fmtdate.Format(fmtdate.DefaultDateFormat, time.Now()))
 
 	// Make dir!
 	err = util.MakeDir(saveDir)
